@@ -74,7 +74,10 @@ static void uvc_stream_uvc_process_no_buf(void *d)
 
 	video_source_fill_buffer(stream->src, &buf);
 
-	v4l2_queue_buffer(sink, &buf);
+	ret = v4l2_queue_buffer(sink, &buf);
+	if (ret < 0)
+		fprintf(stderr, "UVC output requeue failed: %s (%d).\n",
+			strerror(-ret), -ret);
 }
 
 
@@ -132,11 +135,32 @@ error_free_source:
 	return ret;
 }
 
+static int uvc_stream_queue_buffers(struct uvc_stream *stream,
+				    struct v4l2_device *sink)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < sink->buffers.nbufs; ++i) {
+		struct video_buffer buf = {
+			.index = i,
+			.size = sink->buffers.buffers[i].size,
+			.mem = sink->buffers.buffers[i].mem,
+		};
+
+		video_source_fill_buffer(stream->src, &buf);
+		ret = v4l2_queue_buffer(sink, &buf);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int uvc_stream_start_no_alloc(struct uvc_stream *stream)
 {
 	struct v4l2_device *sink = uvc_v4l2_device(stream->uvc);
 	int ret;
-	unsigned int i;
 
 	/* Allocate buffers on the sink. */
 	ret = v4l2_alloc_buffers(sink, V4L2_MEMORY_MMAP, 4);
@@ -151,33 +175,50 @@ static int uvc_stream_start_no_alloc(struct uvc_stream *stream)
 	if (ret < 0) {
 		printf("Failed to query sink buffers: %s (%d)\n",
 				strerror(-ret), -ret);
-		return ret;
+		goto error_free_sink;
 	}
 
-	/* Queue buffers to sink. */
-	for (i = 0; i < sink->buffers.nbufs; ++i) {
-		struct video_buffer buf = {
-			.index = i,
-			.size = sink->buffers.buffers[i].size,
-			.mem = sink->buffers.buffers[i].mem,
-		};
-
-		video_source_fill_buffer(stream->src, &buf);
-		ret = v4l2_queue_buffer(sink, &buf);
-		if (ret < 0)
-			return ret;
+	/* Start refreshing the source before the UVC driver asks for a frame. */
+	ret = video_source_stream_on(stream->src);
+	if (ret < 0) {
+		printf("Failed to start video source: %s (%d)\n",
+		       strerror(-ret), -ret);
+		goto error_free_sink;
 	}
 
-	/* Start the source and sink. */
-	video_source_stream_on(stream->src);
+	/* The tested Android driver never handed prequeued buffers to the endpoint. */
 	ret = v4l2_stream_on(sink);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		ret = uvc_stream_queue_buffers(stream, sink);
+		if (ret < 0)
+			goto error_stream_off;
+
+		ret = v4l2_stream_on(sink);
+		if (ret < 0) {
+			printf("Failed to start UVC output after queueing buffers: %s (%d)\n",
+			       strerror(-ret), -ret);
+			goto error_stream_off;
+		}
+	} else {
+		/* Queue frames after STREAMON so the UVC driver hands them to the endpoint. */
+		ret = uvc_stream_queue_buffers(stream, sink);
+		if (ret < 0) {
+			v4l2_stream_off(sink);
+			goto error_stream_off;
+		}
+	}
 
 	events_watch_fd(stream->events, sink->fd, EVENT_WRITE,
 			uvc_stream_uvc_process_no_buf, stream);
 
 	return 0;
+
+error_stream_off:
+	video_source_stream_off(stream->src);
+error_free_sink:
+	v4l2_free_buffers(sink);
+	video_source_free_buffers(stream->src);
+	return ret;
 }
 
 static int uvc_stream_start_encoded(struct uvc_stream *stream)
@@ -276,10 +317,16 @@ static int uvc_stream_stop(struct uvc_stream *stream)
 
 void uvc_stream_enable(struct uvc_stream *stream, int enable)
 {
+	int ret;
+
 	if (enable)
-		uvc_stream_start(stream);
+		ret = uvc_stream_start(stream);
 	else
-		uvc_stream_stop(stream);
+		ret = uvc_stream_stop(stream);
+
+	if (ret < 0)
+		printf("Failed to %s video stream: %s (%d)\n",
+		       enable ? "start" : "stop", strerror(-ret), -ret);
 }
 
 int uvc_stream_set_format(struct uvc_stream *stream,
