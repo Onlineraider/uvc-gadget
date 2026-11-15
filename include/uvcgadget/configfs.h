@@ -45,6 +45,7 @@ struct uvc_function_config_control {
  * @index: Frame index in the UVC descriptors
  * @width: Frame width in pixels
  * @height: Frame height in pixels
+ * @max_buffer_size: Maximum encoded frame size from configfs
  * @num_intervals: Number of entries in the intervals array
  * @intervals: Array of frame intervals
  */
@@ -52,6 +53,7 @@ struct uvc_function_config_frame {
 	unsigned int index;
 	unsigned int width;
 	unsigned int height;
+	unsigned int max_buffer_size;
 	unsigned int num_intervals;
 	unsigned int *intervals;
 };
