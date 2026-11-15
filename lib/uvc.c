@@ -168,8 +168,12 @@ uvc_fill_streaming_control(struct uvc_device *dev,
 	 */
 	switch (format->fcc) {
 	case V4L2_PIX_FMT_YUYV:
-	case V4L2_PIX_FMT_MJPEG:
 		ctrl->dwMaxVideoFrameSize = frame->width * frame->height * 2;
+		break;
+	case V4L2_PIX_FMT_MJPEG:
+		/* Raw-size estimates needlessly grow the kernel's MJPEG buffers. */
+		ctrl->dwMaxVideoFrameSize = frame->max_buffer_size
+			? frame->max_buffer_size : frame->width * frame->height * 2;
 		break;
 	}
 
